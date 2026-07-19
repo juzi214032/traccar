@@ -25,6 +25,7 @@ bash .claude/skills/ha-integration-validator/validate.sh <path>
 | 4 | `config_flow.py` exists if manifest declares `config_flow: true` | Error |
 | 5 | `__init__.py` and `const.py` exist | Error |
 | 6 | Domain follows naming convention `[a-z][a-z0-9_]*` | Error |
+| 7 | Brand icon present (`icon.png`/`logo.png`/`icons.json`) | Error (custom_components only) |
 
 ## Background
 
@@ -34,6 +35,7 @@ HA imposes specific requirements for loading custom integrations:
 - **version field**: Since HA 2021.2, custom integrations MUST declare `version` in manifest.json. Without it, HA blocks loading with: `The custom integration '<name>' does not have a version key in the manifest file and was blocked from loading.`
 - **config_flow**: Integrations with `"config_flow": true` must have `config_flow.py`. Without it, the integration won't appear in the "Add Integration" UI.
 - **Built-in vs custom**: Built-in integrations under `homeassistant/components/` don't need `version` (tied to HA core). Custom integrations under `custom_components/` require it.
+- **Brand icons**: Built-in integrations get brand icons from the HA brands CDN (`brands.home-assistant.io`). Custom integrations must provide their own: place `icon.png` (256x256) and `logo.png` (512x512) in the integration directory, or create an `icons.json`. Without these, the integration shows with no icon in the HA UI.
 
 ## Example Output
 

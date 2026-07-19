@@ -103,6 +103,21 @@ validate_integration() {
   else
     check "$dirname" "domain naming convention" false "$domain — must be lowercase, start with letter, only [a-z0-9_]"
   fi
+
+  # --- Rule 7: icon files present (required for custom/brand display) ---
+  # Built-in integrations get brand icons from HA CDN; custom ones need local files
+  if [[ "$dir" != *"/homeassistant/components/"* ]]; then
+    local has_icon=false
+    if [[ -f "$dir/icon.png" ]] || [[ -f "$dir/logo.png" ]] || [[ -f "$dir/icons.json" ]]; then
+      has_icon=true
+    fi
+    if [[ "$has_icon" == "true" ]]; then
+      check "$dirname" "brand icon present (icon.png/logo.png/icons.json)" true ""
+    else
+      check "$dirname" "brand icon present (icon.png/logo.png/icons.json)" false \
+        "missing — custom integrations don't get brand CDN icons; add icon.png (256x256) and logo.png (512x512)"
+    fi
+  fi
 }
 
 # ===== Main =====
