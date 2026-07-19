@@ -300,12 +300,18 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - uses: docker/login-action@v4
+        with:
+          registry: registry.cn-hangzhou.aliyuncs.com
+          username: ${{ secrets.ALIYUN_REGISTRY_USERNAME }}
+          password: ${{ secrets.ALIYUN_REGISTRY_TOKEN }}
       - id: meta
         uses: docker/metadata-action@v6
         with:
           flavor: latest=false
           images: |
             juzi214032/traccar
+            registry.cn-hangzhou.aliyuncs.com/juzi214032/traccar
           tags: |
             type=semver,pattern={{major}}.{{minor}}.{{patch}},suffix=-${{ matrix.os }},value=v${{ github.event.inputs.version }}
             type=semver,pattern={{major}}.{{minor}},suffix=-${{ matrix.os }},value=v${{ github.event.inputs.version }}
