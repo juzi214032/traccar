@@ -256,6 +256,8 @@ jobs:
     name: Publish installers
     needs: [test, build-other]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/download-artifact@v8
         with:
