@@ -1696,6 +1696,14 @@ public final class Keys {
             List.of(KeyType.CONFIG, KeyType.DEVICE));
 
     /**
+     * Filter geofence events (enter/exit) when position accuracy is worse than specified value in meters. This does
+     * not prevent the position from being stored, only suppresses geofence event detection.
+     */
+    public static final ConfigKey<Integer> FILTER_GEOFENCE_EVENT_ACCURACY = new IntegerConfigKey(
+            "filter.geofenceEventAccuracy",
+            List.of(KeyType.CONFIG, KeyType.DEVICE));
+
+    /**
      * Filter positions with exactly zero speed values.
      */
     public static final ConfigKey<Boolean> FILTER_STATIC = new BooleanConfigKey(
