@@ -320,6 +320,7 @@ jobs:
             type=semver,pattern={{major}}.{{minor}},value=v${{ github.event.inputs.version }},enable=${{ matrix.os == 'alpine' }}
             type=semver,pattern={{major}},value=v${{ github.event.inputs.version }},enable=${{ matrix.os == 'alpine' }}
             type=raw,value=latest,enable=${{ matrix.os == 'alpine' }}
+            type=raw,value=${{ github.event.inputs.version }},enable=${{ matrix.os == 'alpine' }}
             type=raw,value=${{ matrix.os }}
           labels: |
             org.opencontainers.image.version=${{ github.event.inputs.version }}
