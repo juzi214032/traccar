@@ -1704,6 +1704,16 @@ public final class Keys {
             List.of(KeyType.CONFIG, KeyType.DEVICE));
 
     /**
+     * Skip geofence event detection when position speed is less than or equal to the specified value
+     * in knots. A common use case is filtering out stationary positions (set to 0) to avoid false
+     * geofence enter/exit events. This filter does not prevent the position from being stored, only
+     * suppresses geofence event detection.
+     */
+    public static final ConfigKey<Double> FILTER_GEOFENCE_SPEED_BLACK_LTE = new DoubleConfigKey(
+            "filter.geofenceSpeedBlackLte",
+            List.of(KeyType.CONFIG, KeyType.DEVICE));
+
+    /**
      * Filter positions with exactly zero speed values.
      */
     public static final ConfigKey<Boolean> FILTER_STATIC = new BooleanConfigKey(
