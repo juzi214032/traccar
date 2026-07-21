@@ -1714,6 +1714,30 @@ public final class Keys {
             List.of(KeyType.CONFIG, KeyType.DEVICE));
 
     /**
+     * Number of consecutive positions inside a geofence required to trigger a GEOFENCE_ENTER event.
+     * Positions with geofenceIds changes that do not persist for more than this count will not
+     * generate enter events. For example, a value of 3 means at least 4 consecutive positions must
+     * share the same geofence set before an ENTER event fires. Supports global CONFIG and per-device
+     * DEVICE scopes.
+     */
+    public static final ConfigKey<Integer> FILTER_GEOFENCE_EVENT_ENTER_POSITION_COUNT_BLACK_LTE
+            = new IntegerConfigKey(
+                    "filter.geofenceEventEnterPositionCountBlackLte",
+                    List.of(KeyType.CONFIG, KeyType.DEVICE));
+
+    /**
+     * Number of consecutive positions outside a geofence required to trigger a GEOFENCE_EXIT event.
+     * Positions with geofenceIds changes that do not persist for more than this count will not
+     * generate exit events. For example, a value of 3 means at least 4 consecutive positions must
+     * share the same geofence set before an EXIT event fires. Supports global CONFIG and per-device
+     * DEVICE scopes.
+     */
+    public static final ConfigKey<Integer> FILTER_GEOFENCE_EVENT_EXIT_POSITION_COUNT_BLACK_LTE
+            = new IntegerConfigKey(
+                    "filter.geofenceEventExitPositionCountBlackLte",
+                    List.of(KeyType.CONFIG, KeyType.DEVICE));
+
+    /**
      * Filter positions with exactly zero speed values.
      */
     public static final ConfigKey<Boolean> FILTER_STATIC = new BooleanConfigKey(
