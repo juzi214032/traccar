@@ -50,9 +50,9 @@ public class GeofenceEventHandler extends BaseEventHandler {
      * configured threshold.
      */
     private static class DebounceState {
-        Set<Long> stableGeofenceIds;
-        Set<Long> pendingGeofenceIds;
-        int pendingCount;
+        private Set<Long> stableGeofenceIds;
+        private Set<Long> pendingGeofenceIds;
+        private int pendingCount;
 
         DebounceState(Set<Long> initialIds) {
             this.stableGeofenceIds = new HashSet<>(initialIds);
