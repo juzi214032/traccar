@@ -2324,6 +2324,15 @@ public final class Keys {
             "day");
 
     /**
+     * Maximum number of days to keep rotated log files. Files older than this will be
+     * deleted automatically. Default value is 0, which means no cleanup (keep all logs).
+     */
+    public static final ConfigKey<Integer> LOGGER_MAX_DAYS = new IntegerConfigKey(
+            "logger.maxDays",
+            List.of(KeyType.CONFIG),
+            0);
+
+    /**
      * A list of position attributes to log.
      */
     public static final ConfigKey<String> LOGGER_ATTRIBUTES = new StringConfigKey(

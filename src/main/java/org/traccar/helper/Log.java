@@ -60,10 +60,12 @@ public final class Log {
         private Writer writer;
         private final boolean rotate;
         private final DateTimeFormatter template;
+        private final int maxDays;
 
-        RollingFileHandler(String name, boolean rotate, String rotateInterval) {
+        RollingFileHandler(String name, boolean rotate, String rotateInterval, int maxDays) {
             this.name = name;
             this.rotate = rotate;
+            this.maxDays = maxDays;
             this.template = DateTimeFormatter
                     .ofPattern(rotateInterval.equalsIgnoreCase("HOUR") ? "yyyyMMddHH" : "yyyyMMdd")
                     .withZone(ZoneId.systemDefault());
@@ -82,6 +84,7 @@ public final class Log {
                             if (!new File(name).renameTo(new File(name + "." + this.suffix))) {
                                 throw new RuntimeException("Log file renaming failed");
                             }
+                            cleanupOldLogs();
                         }
                     }
                     if (writer == null) {
@@ -93,6 +96,29 @@ public final class Log {
                     writer.flush();
                 } catch (IOException e) {
                     throw new RuntimeException(e);
+                }
+            }
+        }
+
+        private void cleanupOldLogs() {
+            if (maxDays <= 0) {
+                return;
+            }
+            File logFile = new File(name);
+            File logDir = logFile.getParentFile();
+            if (logDir == null) {
+                return;
+            }
+            String baseName = logFile.getName();
+            long cutoff = System.currentTimeMillis() - (long) maxDays * 24 * 60 * 60 * 1000;
+            File[] files = logDir.listFiles();
+            if (files == null) {
+                return;
+            }
+            for (File file : files) {
+                String fileName = file.getName();
+                if (fileName.startsWith(baseName + ".") && file.lastModified() < cutoff) {
+                    file.delete();
                 }
             }
         }
@@ -178,7 +204,7 @@ public final class Log {
             }
             path = new File(logsPath, "tracker-server.log").getPath();
         }
-        setupLogger(path == null, path, Level.WARNING.getName(), false, true, "DAY");
+        setupLogger(path == null, path, Level.WARNING.getName(), false, true, "DAY", 0);
     }
 
     public static void setupLogger(Config config) {
@@ -188,12 +214,13 @@ public final class Log {
                 config.getString(Keys.LOGGER_LEVEL),
                 config.getBoolean(Keys.LOGGER_FULL_STACK_TRACES),
                 config.getBoolean(Keys.LOGGER_ROTATE),
-                config.getString(Keys.LOGGER_ROTATE_INTERVAL));
+                config.getString(Keys.LOGGER_ROTATE_INTERVAL),
+                config.getInteger(Keys.LOGGER_MAX_DAYS));
     }
 
     private static void setupLogger(
             boolean console, String file, String levelString,
-            boolean fullStackTraces, boolean rotate, String rotateInterval) {
+            boolean fullStackTraces, boolean rotate, String rotateInterval, int maxDays) {
 
         Logger rootLogger = Logger.getLogger("");
         for (Handler handler : rootLogger.getHandlers()) {
@@ -204,7 +231,7 @@ public final class Log {
         if (console) {
             handler = new ConsoleHandler();
         } else {
-            handler = new RollingFileHandler(file, rotate, rotateInterval);
+            handler = new RollingFileHandler(file, rotate, rotateInterval, maxDays);
         }
 
         handler.setFormatter(new LogFormatter(fullStackTraces));
