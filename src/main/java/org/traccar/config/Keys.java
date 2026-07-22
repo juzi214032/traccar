@@ -1714,6 +1714,47 @@ public final class Keys {
             List.of(KeyType.CONFIG, KeyType.DEVICE));
 
     /**
+     * Radius in meters for building an anchor cluster. When a device has at least
+     * {@link #FILTER_GEOFENCE_ANCHOR_COUNT} consecutive positions within this radius
+     * of each other, an anchor point is locked. Supports global CONFIG and per-device
+     * DEVICE scopes.
+     */
+    public static final ConfigKey<Integer> FILTER_GEOFENCE_ANCHOR_RADIUS = new IntegerConfigKey(
+            "filter.geofenceAnchorRadius",
+            List.of(KeyType.CONFIG, KeyType.DEVICE));
+
+    /**
+     * Number of consecutive positions within {@link #FILTER_GEOFENCE_ANCHOR_RADIUS}
+     * required to lock an anchor point. Once locked, positions farther than
+     * {@link #FILTER_GEOFENCE_ANCHOR_MAX_DISTANCE} from the anchor will be filtered
+     * until the anchor is released. Supports global CONFIG and per-device DEVICE scopes.
+     */
+    public static final ConfigKey<Integer> FILTER_GEOFENCE_ANCHOR_COUNT = new IntegerConfigKey(
+            "filter.geofenceAnchorCount",
+            List.of(KeyType.CONFIG, KeyType.DEVICE));
+
+    /**
+     * Maximum distance in meters allowed from the anchor point before filtering begins.
+     * Positions beyond this distance are treated as potential drift and their geofence
+     * calculation is skipped (previous geofenceIds are reused) unless the device shows
+     * sustained movement away from the anchor. Supports global CONFIG and per-device
+     * DEVICE scopes.
+     */
+    public static final ConfigKey<Integer> FILTER_GEOFENCE_ANCHOR_MAX_DISTANCE = new IntegerConfigKey(
+            "filter.geofenceAnchorMaxDistance",
+            List.of(KeyType.CONFIG, KeyType.DEVICE));
+
+    /**
+     * Number of consecutive positions that must be progressively farther from the anchor
+     * before the anchor is released (indicating genuine movement rather than GPS drift).
+     * When released, normal geofence calculation resumes. Supports global CONFIG and
+     * per-device DEVICE scopes.
+     */
+    public static final ConfigKey<Integer> FILTER_GEOFENCE_ANCHOR_RELEASE_COUNT = new IntegerConfigKey(
+            "filter.geofenceAnchorReleaseCount",
+            List.of(KeyType.CONFIG, KeyType.DEVICE));
+
+    /**
      * Number of consecutive positions inside a geofence required to trigger a GEOFENCE_ENTER event.
      * Positions with geofenceIds changes that do not persist for more than this count will not
      * generate enter events. For example, a value of 3 means at least 4 consecutive positions must
