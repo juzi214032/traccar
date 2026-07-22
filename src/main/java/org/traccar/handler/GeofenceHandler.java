@@ -92,9 +92,17 @@ public class GeofenceHandler extends BasePositionHandler {
         // 精度超标：当前精度值大于阈值时，跳过围栏计算，复用上一次的围栏结果
         boolean skipByAccuracy = geofenceEventAccuracy != null
                 && position.getAccuracy() > geofenceEventAccuracy;
+        if (skipByAccuracy) {
+            LOGGER.info("device {} accuracy filter accuracy={} threshold={}",
+                    deviceId, position.getAccuracy(), geofenceEventAccuracy);
+        }
         // 速度过低：当前速度小于等于阈值时跳过围栏计算，避免静止/低速设备反复触发围栏进出事件
         boolean skipBySpeed = geofenceSpeedBlackLte != null
                 && position.getSpeed() <= geofenceSpeedBlackLte;
+        if (skipBySpeed) {
+            LOGGER.info("device {} speed filter speed={} threshold={}",
+                    deviceId, position.getSpeed(), geofenceSpeedBlackLte);
+        }
 
         // 锚点过滤：设备静止时锁定锚点，远离锚点的位置跳过围栏计算
         boolean skipByAnchor = false;
@@ -141,16 +149,16 @@ public class GeofenceHandler extends BasePositionHandler {
                         lat, lon, state.anchorLat, state.anchorLon);
                 if (distFromAnchor <= anchorMaxDist) {
                     if (state.awayStreak > 0) {
-                        LOGGER.debug("device {} anchor away streak reset distance={}", deviceId, distFromAnchor);
+                        LOGGER.info("device {} anchor away streak reset distance={}", deviceId, distFromAnchor);
                     }
                     state.awayStreak = 0;
                 } else {
                     if (distFromAnchor > state.lastDistanceFromAnchor) {
                         state.awayStreak++;
-                        LOGGER.debug("device {} anchor away streak {} distance={} lastDistance={}",
+                        LOGGER.info("device {} anchor away streak {} distance={} lastDistance={}",
                                 deviceId, state.awayStreak, distFromAnchor, state.lastDistanceFromAnchor);
                     } else {
-                        LOGGER.debug("device {} anchor away streak reset distance={}", deviceId, distFromAnchor);
+                        LOGGER.info("device {} anchor away streak reset distance={}", deviceId, distFromAnchor);
                         state.awayStreak = 0;
                     }
                     if (state.awayStreak >= anchorRelease) {
@@ -162,7 +170,7 @@ public class GeofenceHandler extends BasePositionHandler {
                         state.clusterCount = 1;
                     } else {
                         skipByAnchor = true;
-                        LOGGER.debug("device {} anchor filtered lat={} lon={} distance={} awayStreak={}/{}",
+                        LOGGER.info("device {} anchor filtered lat={} lon={} distance={} awayStreak={}/{}",
                                 deviceId, lat, lon, distFromAnchor, state.awayStreak, anchorRelease);
                     }
                 }

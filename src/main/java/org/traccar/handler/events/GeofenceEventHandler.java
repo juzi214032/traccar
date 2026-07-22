@@ -16,6 +16,8 @@
 package org.traccar.handler.events;
 
 import jakarta.inject.Inject;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.traccar.config.Keys;
 import org.traccar.helper.model.AttributeUtil;
 import org.traccar.helper.model.PositionUtil;
@@ -31,6 +33,8 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class GeofenceEventHandler extends BaseEventHandler {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(GeofenceEventHandler.class);
 
     private final CacheManager cacheManager;
 
@@ -94,6 +98,8 @@ public class GeofenceEventHandler extends BaseEventHandler {
             if (currentIds.equals(state.pendingGeofenceIds)) {
                 state.pendingCount++;
             } else {
+                LOGGER.info("device {} geofence debounce reset currentIds={} previousPending={}",
+                        deviceId, currentIds, state.pendingGeofenceIds);
                 state.pendingGeofenceIds = currentIds;
                 state.pendingCount = 1;
                 return; // geofence set changed — reset count, skip event detection this round
@@ -119,6 +125,8 @@ public class GeofenceEventHandler extends BaseEventHandler {
                             Event event = new Event(Event.TYPE_GEOFENCE_ENTER, position);
                             event.setGeofenceId(geofenceId);
                             callback.eventDetected(event);
+                            LOGGER.info("device {} geofence enter debounce fired geofenceId={} count={} threshold={}",
+                                    deviceId, geofenceId, state.pendingCount, enterThreshold);
                         }
                     }
                 }
@@ -137,6 +145,8 @@ public class GeofenceEventHandler extends BaseEventHandler {
                             Event event = new Event(Event.TYPE_GEOFENCE_EXIT, position);
                             event.setGeofenceId(geofenceId);
                             callback.eventDetected(event);
+                            LOGGER.info("device {} geofence exit debounce fired geofenceId={} count={} threshold={}",
+                                    deviceId, geofenceId, state.pendingCount, exitThreshold);
                         }
                     }
                 }
