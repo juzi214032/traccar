@@ -24,3 +24,5 @@ gh workflow run release.yml -f version="$VERSION"
 
 sleep 3
 gh run list --workflow=release.yml --limit 1
+
+echo "版本号：$VERSION"
