@@ -20,10 +20,10 @@ if [ -n "$(git log origin/master..HEAD --oneline 2>/dev/null)" ]; then
     exit 1
 fi
 
-echo "触发 Build Release, repo=$REPO version=$VERSION"
 gh workflow run release.yml -R "$REPO" -f version="$VERSION"
 
 sleep 3
-gh run list -R "$REPO" --workflow=release.yml --limit 1
+RUN_URL="$(gh run list -R "$REPO" --workflow=release.yml --limit 1 --json url --jq '.[0].url')"
 
+echo "流水线地址：$RUN_URL"
 echo "版本号：$VERSION"
