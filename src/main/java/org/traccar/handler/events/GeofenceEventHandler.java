@@ -19,6 +19,7 @@ import jakarta.inject.Inject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.traccar.config.Keys;
+import org.traccar.handler.GeofenceHandler;
 import org.traccar.helper.model.AttributeUtil;
 import org.traccar.helper.model.PositionUtil;
 import org.traccar.model.Calendar;
@@ -90,6 +91,13 @@ public class GeofenceEventHandler extends BaseEventHandler {
 
         if (enterThreshold != null || exitThreshold != null) {
             // ========== Debounce mode ==========
+
+            // 被 GeofenceHandler 跳过的点其围栏结果是继承来的，不代表真实观测，
+            // 不推进也不重置防抖计数，否则漂移期间被拦截的点会复制错误结果凑够计数
+            if (position.getBoolean(GeofenceHandler.ATTRIBUTE_GEOFENCE_SKIPPED)) {
+                LOGGER.info("device {} geofence debounce ignored skipped position", deviceId);
+                return;
+            }
 
             DebounceState state = debounceStates.computeIfAbsent(deviceId,
                     k -> new DebounceState(currentIds));

@@ -32,13 +32,19 @@ public class GeofenceHandler extends BasePositionHandler {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(GeofenceHandler.class);
 
+    /**
+     * Position attribute marking that geofence calculation was skipped and the
+     * geofence ids were inherited. Downstream debounce must not count such positions.
+     */
+    public static final String ATTRIBUTE_GEOFENCE_SKIPPED = "geofenceSkipped";
+
     private static final double KNOTS_TO_MPS = 0.514444;
     /** Reported speed above this (m/s) is subject to the fake-speed check. */
     private static final double FAKE_SPEED_MIN_MPS = 5.0;
     /** Implied speed must reach at least this fraction of the reported speed. */
     private static final double FAKE_SPEED_MIN_RATIO = 0.4;
     /** Implied speed above this (m/s) is subject to the teleport check. */
-    private static final double TELEPORT_MIN_MPS = 15.0;
+    private static final double TELEPORT_MIN_MPS = 10.0;
     /** Implied speed must not exceed the reported speed by more than this factor. */
     private static final double TELEPORT_MAX_RATIO = 2.5;
     /** Skip the consistency check when positions are too far apart in time (seconds). */
@@ -225,7 +231,9 @@ public class GeofenceHandler extends BasePositionHandler {
         }
 
         if (skipByAccuracy || skipBySpeed || skipByConsistency || skipByAnchor) {
-            // 不重新计算围栏，继承上一个已知位置的围栏 ID 列表
+            // 不重新计算围栏，继承上一个已知位置的围栏 ID 列表；
+            // 打标记让防抖计数忽略该点，避免继承的错误结果推进事件计数
+            position.set(ATTRIBUTE_GEOFENCE_SKIPPED, true);
             Position lastPosition = cacheManager.getPosition(position.getDeviceId());
             if (lastPosition != null && lastPosition.getGeofenceIds() != null) {
                 position.setGeofenceIds(lastPosition.getGeofenceIds());
