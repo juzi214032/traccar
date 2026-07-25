@@ -275,9 +275,37 @@ jobs:
           tag_name: v${{ github.event.inputs.version }}
           files: traccar-*.zip
 
-  docker:
-    name: Docker ${{ matrix.os }}
+  docker-build:
+    name: Docker build ${{ matrix.os }}
     needs: [build-other]
+    if: ${{ github.event.inputs.version != 'preview' }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [alpine, debian, ubuntu]
+        include:
+          - platforms: linux/amd64,linux/arm64
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v8
+        with:
+          name: installers-other
+          path: docker
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
+        with:
+          context: docker
+          file: docker/Dockerfile.${{ matrix.os }}
+          build-args: VERSION=${{ github.event.inputs.version }}
+          platforms: ${{ matrix.platforms }}
+          push: false
+          cache-from: type=gha,scope=docker-${{ matrix.os }}
+          cache-to: type=gha,mode=max,scope=docker-${{ matrix.os }}
+
+  docker:
+    name: Docker push ${{ matrix.os }}
+    needs: [test, docker-build]
     if: ${{ github.event.inputs.version != 'preview' }}
     runs-on: ubuntu-latest
     strategy:
@@ -332,3 +360,4 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           platforms: ${{ matrix.platforms }}
           push: true
+          cache-from: type=gha,scope=docker-${{ matrix.os }}
