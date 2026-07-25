@@ -277,7 +277,7 @@ jobs:
 
   docker:
     name: Docker ${{ matrix.os }}
-    needs: [test, build-other]
+    needs: [build-other]
     if: ${{ github.event.inputs.version != 'preview' }}
     runs-on: ubuntu-latest
     strategy:
