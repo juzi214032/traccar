@@ -9,6 +9,7 @@
 set -euo pipefail
 
 VERSION="${1:-$(date +%Y%m%d%H%M%S)}"
+REPO="$(git remote get-url origin | sed -E 's#(git@github.com:|https://github.com/)##; s#\.git$##')"
 
 if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
     echo "WARN: 存在未提交的改动，发布内容以远端 master 为准" >&2
@@ -19,10 +20,10 @@ if [ -n "$(git log origin/master..HEAD --oneline 2>/dev/null)" ]; then
     exit 1
 fi
 
-echo "触发 Build Release, version=$VERSION"
-gh workflow run release.yml -f version="$VERSION"
+echo "触发 Build Release, repo=$REPO version=$VERSION"
+gh workflow run release.yml -R "$REPO" -f version="$VERSION"
 
 sleep 3
-gh run list --workflow=release.yml --limit 1
+gh run list -R "$REPO" --workflow=release.yml --limit 1
 
 echo "版本号：$VERSION"
