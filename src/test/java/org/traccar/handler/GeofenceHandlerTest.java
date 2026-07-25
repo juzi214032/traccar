@@ -346,4 +346,111 @@ public class GeofenceHandlerTest {
         assertNull(drift2.getGeofenceIds(),
                 "device 2: anchor not established, should NOT filter drift");
     }
+
+    @Test
+    public void testLowAccuracyDriftDoesNotReleaseAnchor() {
+        when(config.getString("filter.geofenceEventAccuracy")).thenReturn("20");
+        configureAnchor(30, 5, 50, 5);
+
+        // Build anchor with good-accuracy positions (accuracy=0 passes)
+        buildAnchor(5);
+
+        Position lastPos = positionWithGeofenceIds(BASE_LAT, BASE_LON, List.of(GEOFENCE_ID));
+        lastPositionRef.set(lastPos);
+
+        // 6 low-accuracy drift points progressively farther from the anchor.
+        // Before the fix these would increment awayStreak and release the anchor after 5.
+        for (int i = 1; i <= 6; i++) {
+            Position p = position(BASE_LAT, BASE_LON + i * 0.001);
+            p.setAccuracy(30); // > 20 → skipByAccuracy → anchor state frozen
+            handler.onPosition(p, countingCallback(new AtomicBoolean()));
+            assertEquals(List.of(GEOFENCE_ID), p.getGeofenceIds(),
+                    "low-accuracy drift " + i + ": inherited geofenceIds via accuracy skip");
+        }
+
+        // A good-accuracy drift point beyond maxDistance: anchor must still be locked,
+        // so it starts a fresh awayStreak (1/5) and gets filtered.
+        Position goodDrift = position(BASE_LAT, DRIFT_LON);
+        goodDrift.setAccuracy(10);
+        handler.onPosition(goodDrift, countingCallback(new AtomicBoolean()));
+        assertEquals(List.of(GEOFENCE_ID), goodDrift.getGeofenceIds(),
+                "anchor still locked after low-accuracy drift: good-accuracy drift filtered");
+    }
+
+    @Test
+    public void testLowAccuracyPointsDoNotBuildAnchor() {
+        when(config.getString("filter.geofenceEventAccuracy")).thenReturn("20");
+        configureAnchor(30, 5, 50, 5);
+
+        // Feed 5 low-accuracy positions at base — they must NOT build an anchor cluster
+        for (int i = 0; i < 5; i++) {
+            Position p = position(BASE_LAT, BASE_LON);
+            p.setAccuracy(30); // > 20 → skipByAccuracy → no cluster building
+            handler.onPosition(p, countingCallback(new AtomicBoolean()));
+        }
+
+        // A good-accuracy drift point: no anchor established → NOT filtered by anchor,
+        // goes through normal geofence calculation (no matching geofences → null)
+        Position drift = position(BASE_LAT, DRIFT_LON);
+        drift.setAccuracy(10);
+        handler.onPosition(drift, countingCallback(new AtomicBoolean()));
+        assertNull(drift.getGeofenceIds(),
+                "no anchor was built from low-accuracy points: drift not filtered");
+    }
+
+    @Test
+    public void testConsistentHighSpeedDepartureStillReleasesAnchor() {
+        when(config.getString("filter.geofenceSpeedConsistency")).thenReturn("true");
+        configureAnchor(30, 5, 50, 5);
+
+        buildAnchor(5);
+
+        long t0 = 1_000_000_000_000L;
+        Position lastPos = positionWithGeofenceIds(BASE_LAT, BASE_LON, List.of(GEOFENCE_ID));
+        lastPos.setFixTime(new Date(t0));
+        lastPositionRef.set(lastPos);
+
+        // Departure at ~85 m/s with matching reported speed (166 knots), 1s apart:
+        // implied speed ≈ reported speed → consistent → away streak builds → release at step 5
+        for (int i = 1; i <= 5; i++) {
+            Position p = position(BASE_LAT, BASE_LON + i * 0.001);
+            p.setFixTime(new Date(t0 + i * 1000L));
+            p.setSpeed(166);
+            handler.onPosition(p, countingCallback(new AtomicBoolean()));
+            if (i < 5) {
+                assertEquals(List.of(GEOFENCE_ID), p.getGeofenceIds(),
+                        "step " + i + ": filtered while away streak below release count");
+            } else {
+                assertNotEquals(List.of(GEOFENCE_ID), p.getGeofenceIds(),
+                        "step " + i + ": consistent movement must release the anchor");
+            }
+            lastPositionRef.set(p);
+        }
+    }
+
+    @Test
+    public void testFakeSpeedCreepIsFrozenAndInherits() {
+        when(config.getString("filter.geofenceSpeedConsistency")).thenReturn("true");
+        configureAnchor(30, 5, 50, 5);
+
+        buildAnchor(5);
+
+        long t0 = 1_000_000_000_000L;
+        Position lastPos = positionWithGeofenceIds(BASE_LAT, BASE_LON, List.of(GEOFENCE_ID));
+        lastPos.setFixTime(new Date(t0));
+        lastPositionRef.set(lastPos);
+
+        // Drift creep: claims 80 knots (~41 m/s) but only moves ~5m per second.
+        // Implied speed ≈ 5 m/s < 41 * 0.4 → fakeSpeed → frozen + inherit.
+        // Cumulative displacement passes anchorMaxDistance but the anchor never releases.
+        for (int i = 1; i <= 20; i++) {
+            Position p = position(BASE_LAT, BASE_LON + i * 0.00006);
+            p.setFixTime(new Date(t0 + i * 1000L));
+            p.setSpeed(80);
+            handler.onPosition(p, countingCallback(new AtomicBoolean()));
+            assertEquals(List.of(GEOFENCE_ID), p.getGeofenceIds(),
+                    "creep " + i + ": fake-speed point must inherit geofenceIds");
+            lastPositionRef.set(p);
+        }
+    }
 }

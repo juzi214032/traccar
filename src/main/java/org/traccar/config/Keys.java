@@ -1755,6 +1755,19 @@ public final class Keys {
             List.of(KeyType.CONFIG, KeyType.DEVICE));
 
     /**
+     * Enable the speed consistency check for geofence processing. Compares the reported GPS speed
+     * with the speed implied by the displacement from the previous position. A position is
+     * distrusted (geofence calculation skipped and anchor state frozen) when it claims high speed
+     * but barely moved (fake speed, typical of GPS drift) or moved much farther than its reported
+     * speed allows (teleport jump). Genuine movement, including high-speed trains, reports speeds
+     * consistent with displacement and is not affected. Supports global CONFIG and per-device
+     * DEVICE scopes.
+     */
+    public static final ConfigKey<Boolean> FILTER_GEOFENCE_SPEED_CONSISTENCY = new BooleanConfigKey(
+            "filter.geofenceSpeedConsistency",
+            List.of(KeyType.CONFIG, KeyType.DEVICE));
+
+    /**
      * Number of consecutive positions inside a geofence required to trigger a GEOFENCE_ENTER event.
      * Positions with geofenceIds changes that do not persist for more than this count will not
      * generate enter events. For example, a value of 3 means at least 4 consecutive positions must
