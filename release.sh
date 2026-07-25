@@ -20,7 +20,10 @@ if [ -n "$(git log origin/master..HEAD --oneline 2>/dev/null)" ]; then
     exit 1
 fi
 
-gh workflow run release.yml -R "$REPO" -f version="$VERSION"
+if ! OUTPUT="$(gh workflow run release.yml -R "$REPO" -f version="$VERSION" 2>&1)"; then
+    echo "$OUTPUT" >&2
+    exit 1
+fi
 
 sleep 3
 RUN_URL="$(gh run list -R "$REPO" --workflow=release.yml --limit 1 --json url --jq '.[0].url')"
