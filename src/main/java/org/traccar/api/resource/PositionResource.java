@@ -73,7 +73,8 @@ public class PositionResource extends BaseResource {
     @GET
     public Stream<Position> getJson(
             @QueryParam("deviceId") long deviceId, @QueryParam("id") List<Long> positionIds,
-            @QueryParam("geofenceId") long geofenceId, @QueryParam("from") Date from, @QueryParam("to") Date to)
+            @QueryParam("geofenceId") long geofenceId, @QueryParam("from") Date from, @QueryParam("to") Date to,
+            @QueryParam("minSpeed") Double minSpeed, @QueryParam("maxSpeed") Double maxSpeed)
             throws StorageException {
         if (!positionIds.isEmpty()) {
             var positions = new ArrayList<Position>();
@@ -94,7 +95,9 @@ public class PositionResource extends BaseResource {
 
                 return PositionUtil.getPositionsStream(
                         storage, deviceId, from, to, config.getInteger(Keys.REPORT_MAX_POSITIONS))
-                        .filter(position -> geofence == null || geofence.containsPosition(position));
+                        .filter(position -> geofence == null || geofence.containsPosition(position))
+                        .filter(position -> minSpeed == null || position.getSpeed() > minSpeed)
+                        .filter(position -> maxSpeed == null || position.getSpeed() < maxSpeed);
             } else {
                 return storage.getObjectsStream(Position.class, new Request(
                         new Columns.All(), new Condition.LatestPositions(deviceId)));
