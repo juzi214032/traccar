@@ -403,23 +403,34 @@ public class GeofenceHandlerTest {
         when(config.getString("filter.geofenceSpeedConsistency")).thenReturn("true");
         configureAnchor(30, 5, 50, 5);
 
+        // circle geofence around the anchor so recomputed nearby points stay "inside"
+        Geofence circle = new Geofence();
+        circle.setId(GEOFENCE_ID);
+        circle.setArea("CIRCLE (" + BASE_LAT + " " + BASE_LON + ", 60)");
+        when(cacheManager.getDeviceObjects(anyLong(), eq(Geofence.class))).thenReturn(Set.of(circle));
+
         buildAnchor(5);
 
-        long t0 = 1_000_000_000_000L;
+        long t0 = System.currentTimeMillis();
         Position lastPos = positionWithGeofenceIds(BASE_LAT, BASE_LON, List.of(GEOFENCE_ID));
         lastPos.setFixTime(new Date(t0));
         lastPositionRef.set(lastPos);
 
-        // Departure at ~85 m/s with matching reported speed (166 knots), 1s apart:
-        // implied speed ≈ reported speed → consistent → away streak builds → release at step 5
-        for (int i = 1; i <= 5; i++) {
-            Position p = position(BASE_LAT, BASE_LON + i * 0.001);
-            p.setFixTime(new Date(t0 + i * 1000L));
-            p.setSpeed(166);
+        // Realistic hard departure: accelerating 8 m/s^2 (below the 10 m/s^2 plausibility
+        // limit), reported speed matching displacement, 1s apart. Distance from anchor:
+        // 8, 24, 48m (inside anchorMaxDistance=50), then 80, 120, 168, 224, 288m — five
+        // increasing points beyond anchorMaxDistance release the anchor at the last step.
+        double metersPerLonDegree = 111320 * Math.cos(Math.toRadians(BASE_LAT));
+        double[] speedsMps = {8, 16, 24, 32, 40, 48, 56, 64};
+        double[] eastMeters = {8, 24, 48, 80, 120, 168, 224, 288};
+        for (int i = 0; i < speedsMps.length; i++) {
+            Position p = position(BASE_LAT, BASE_LON + eastMeters[i] / metersPerLonDegree);
+            p.setFixTime(new Date(t0 + (i + 1) * 1000L));
+            p.setSpeed(speedsMps[i] / 0.514444);
             handler.onPosition(p, countingCallback(new AtomicBoolean()));
-            if (i < 5) {
+            if (i < speedsMps.length - 1) {
                 assertEquals(List.of(GEOFENCE_ID), p.getGeofenceIds(),
-                        "step " + i + ": filtered while away streak below release count");
+                        "step " + i + ": inside anchor range or filtered while away streak builds");
             } else {
                 assertNotEquals(List.of(GEOFENCE_ID), p.getGeofenceIds(),
                         "step " + i + ": consistent movement must release the anchor");
