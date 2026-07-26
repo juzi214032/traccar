@@ -49,6 +49,8 @@ public class GeofenceHandler extends BasePositionHandler {
     private static final double TELEPORT_MAX_RATIO = 2.5;
     /** Skip the consistency check when positions are too far apart in time (seconds). */
     private static final double CONSISTENCY_MAX_INTERVAL = 60.0;
+    /** Maximum plausible reported-speed increase rate (m/s^2) for the acceleration check. */
+    private static final double MAX_ACCELERATION_MPS2 = 10.0;
 
     private final CacheManager cacheManager;
 
@@ -57,6 +59,24 @@ public class GeofenceHandler extends BasePositionHandler {
      * Keyed by deviceId.
      */
     private final ConcurrentHashMap<Long, AnchorState> anchorStates = new ConcurrentHashMap<>();
+
+    /**
+     * Last credible reported speed per device, used by the acceleration plausibility
+     * check. Fabricated drift tracks are often self-consistent (reported speed matches
+     * displacement), so the only tell is a kinematically impossible speed jump from the
+     * last trusted speed. Keyed by deviceId.
+     */
+    private final ConcurrentHashMap<Long, TrustedSpeed> trustedSpeeds = new ConcurrentHashMap<>();
+
+    private static class TrustedSpeed {
+        private double speedMps;
+        private long timeMs;
+
+        TrustedSpeed(double speedMps, long timeMs) {
+            this.speedMps = speedMps;
+            this.timeMs = timeMs;
+        }
+    }
 
     /**
      * Tracks the stationary anchor state for a single device.
@@ -149,6 +169,30 @@ public class GeofenceHandler extends BasePositionHandler {
             }
         }
 
+        // 加速度合理性检查：自洽伪造轨迹（上报速度与位移吻合）能骗过一致性检查，
+        // 唯一破绽是相对最后可信速度的运动学不可能跳变（如 1 秒内 0→64 m/s）
+        boolean skipByAcceleration = false;
+        if (consistencyEnabled != null && consistencyEnabled) {
+            long fixTimeMs = position.getFixTime().getTime();
+            double reportedSpeed = position.getSpeed() * KNOTS_TO_MPS;
+            TrustedSpeed trusted = trustedSpeeds.get(deviceId);
+            if (trusted != null && !skipByAccuracy && !skipByConsistency) {
+                double interval = (fixTimeMs - trusted.timeMs) / 1000.0;
+                if (interval > 0 && interval <= CONSISTENCY_MAX_INTERVAL
+                        && reportedSpeed > trusted.speedMps + MAX_ACCELERATION_MPS2 * interval) {
+                    skipByAcceleration = true;
+                    // 被拒绝的点不更新可信速度，但推进时间戳：断言设备此刻仍处于可信速度，
+                    // 否则伪造轨迹拖长时间后会因间隔变大而重新变得"合理"
+                    trusted.timeMs = fixTimeMs;
+                    LOGGER.info("device {} speed acceleration filter reported={} trusted={} interval={}",
+                            deviceId, reportedSpeed, trusted.speedMps, interval);
+                }
+            }
+            if (!skipByAcceleration && !skipByAccuracy && !skipByConsistency) {
+                trustedSpeeds.put(deviceId, new TrustedSpeed(reportedSpeed, fixTimeMs));
+            }
+        }
+
         // 锚点过滤：设备静止时锁定锚点，远离锚点的位置跳过围栏计算
         boolean skipByAnchor = false;
         Integer anchorRadius = AttributeUtil.lookup(
@@ -161,10 +205,11 @@ public class GeofenceHandler extends BasePositionHandler {
                 cacheManager, Keys.FILTER_GEOFENCE_ANCHOR_RELEASE_COUNT, deviceId);
 
         if (anchorRadius != null && anchorCount != null && anchorMaxDist != null && anchorRelease != null) {
-            if (skipByAccuracy || skipByConsistency) {
-                // 低精度或速度不自洽的点已被否决，不允许它建立、推进或释放锚点，保持锚点状态冻结
+            if (skipByAccuracy || skipByConsistency || skipByAcceleration) {
+                // 低精度或速度不自洽/不合理的点已被否决，不允许它建立、推进或释放锚点，保持锚点状态冻结
                 LOGGER.info("device {} anchor state frozen reason={} accuracy={} threshold={}",
-                        deviceId, skipByAccuracy ? "accuracy" : "consistency",
+                        deviceId,
+                        skipByAccuracy ? "accuracy" : skipByConsistency ? "consistency" : "acceleration",
                         position.getAccuracy(), geofenceEventAccuracy);
             } else {
                 double lat = position.getLatitude();
@@ -230,7 +275,7 @@ public class GeofenceHandler extends BasePositionHandler {
             }
         }
 
-        if (skipByAccuracy || skipBySpeed || skipByConsistency || skipByAnchor) {
+        if (skipByAccuracy || skipBySpeed || skipByConsistency || skipByAcceleration || skipByAnchor) {
             // 不重新计算围栏，继承上一个已知位置的围栏 ID 列表；
             // 打标记让防抖计数忽略该点，避免继承的错误结果推进事件计数
             position.set(ATTRIBUTE_GEOFENCE_SKIPPED, true);
