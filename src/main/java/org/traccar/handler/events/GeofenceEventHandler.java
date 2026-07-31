@@ -20,6 +20,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.traccar.config.Keys;
 import org.traccar.handler.GeofenceHandler;
+import org.traccar.helper.DistanceCalculator;
 import org.traccar.helper.model.AttributeUtil;
 import org.traccar.helper.model.PositionUtil;
 import org.traccar.model.Calendar;
@@ -30,6 +31,7 @@ import org.traccar.session.cache.CacheManager;
 
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -39,11 +41,24 @@ public class GeofenceEventHandler extends BaseEventHandler {
 
     private final CacheManager cacheManager;
 
+    private static final double KNOTS_TO_MPS = 0.514444;
+    private static final double TELEPORT_MIN_MPS = 10.0;
+    private static final double TELEPORT_MAX_RATIO = 2.5;
+
     /**
      * Per-device debounce state for geofence enter/exit events.
      * Keyed by deviceId. Only populated when debounce is configured.
      */
     private final ConcurrentHashMap<Long, DebounceState> debounceStates = new ConcurrentHashMap<>();
+
+    /**
+     * Per-device pending exit events awaiting delayed confirmation, keyed by
+     * deviceId then geofenceId. An exit is held here instead of firing immediately
+     * when a confirmation window is configured; it is discarded if the device
+     * teleports back inside the geofence, or confirmed when the window expires.
+     */
+    private final ConcurrentHashMap<Long, ConcurrentHashMap<Long, PendingExit>> pendingExits
+            = new ConcurrentHashMap<>();
 
     /**
      * Tracks the geofence debounce state for a single device.
@@ -66,6 +81,21 @@ public class GeofenceEventHandler extends BaseEventHandler {
         }
     }
 
+    /**
+     * A held geofence exit event awaiting delayed confirmation.
+     */
+    private static class PendingExit {
+        private final long geofenceId;
+        private final long triggerTimeMs;
+        private final Position triggerPosition;
+
+        PendingExit(long geofenceId, Position triggerPosition) {
+            this.geofenceId = geofenceId;
+            this.triggerPosition = triggerPosition;
+            this.triggerTimeMs = triggerPosition.getFixTime().getTime();
+        }
+    }
+
     @Inject
     public GeofenceEventHandler(CacheManager cacheManager) {
         this.cacheManager = cacheManager;
@@ -84,6 +114,8 @@ public class GeofenceEventHandler extends BaseEventHandler {
                 cacheManager, Keys.FILTER_GEOFENCE_EVENT_ENTER_POSITION_COUNT_BLACK_LTE, deviceId);
         Integer exitThreshold = AttributeUtil.lookup(
                 cacheManager, Keys.FILTER_GEOFENCE_EVENT_EXIT_POSITION_COUNT_BLACK_LTE, deviceId);
+        Integer confirmWindow = AttributeUtil.lookup(
+                cacheManager, Keys.FILTER_GEOFENCE_EXIT_CONFIRM_WINDOW, deviceId);
 
         Set<Long> currentIds = position.getGeofenceIds() != null
                 ? new HashSet<>(position.getGeofenceIds())
@@ -91,6 +123,12 @@ public class GeofenceEventHandler extends BaseEventHandler {
 
         if (enterThreshold != null || exitThreshold != null) {
             // ========== Debounce mode ==========
+
+            // 延迟确认：处理挂起的 exit。必须在 skipped 检查前执行——跳回点可能被
+            // GeofenceHandler 的速度一致性检查跳过，但其坐标仍可用于 teleport 判定。
+            if (confirmWindow != null && confirmWindow > 0) {
+                processPendingExits(deviceId, position, callback, confirmWindow);
+            }
 
             // 被 GeofenceHandler 跳过的点其围栏结果是继承来的，不代表真实观测，
             // 不推进也不重置防抖计数，否则漂移期间被拦截的点会复制错误结果凑够计数
@@ -150,11 +188,32 @@ public class GeofenceEventHandler extends BaseEventHandler {
                         Calendar calendar = calendarId != 0
                                 ? cacheManager.getObject(Calendar.class, calendarId) : null;
                         if (calendar == null || calendar.checkMoment(position.getFixTime())) {
-                            Event event = new Event(Event.TYPE_GEOFENCE_EXIT, position);
-                            event.setGeofenceId(geofenceId);
-                            callback.eventDetected(event);
-                            LOGGER.info("device {} geofence exit debounce fired geofenceId={} count={} threshold={}",
-                                    deviceId, geofenceId, state.pendingCount, exitThreshold);
+                            if (confirmWindow != null && confirmWindow > 0) {
+                                // 延迟确认：挂起 exit，等待窗口内是否 teleport 跳回
+                                ConcurrentHashMap<Long, PendingExit> devicePending =
+                                        pendingExits.computeIfAbsent(deviceId,
+                                                k -> new ConcurrentHashMap<>());
+                                PendingExit existing = devicePending.get(geofenceId);
+                                if (existing != null) {
+                                    // 旧 pending 未被丢弃说明是真实 exit，先确认再覆盖
+                                    Event event = new Event(
+                                            Event.TYPE_GEOFENCE_EXIT, existing.triggerPosition);
+                                    event.setGeofenceId(geofenceId);
+                                    callback.eventDetected(event);
+                                    LOGGER.info("device {} exit confirmed (overwritten) geofenceId={}",
+                                            deviceId, geofenceId);
+                                }
+                                devicePending.put(geofenceId, new PendingExit(geofenceId, position));
+                                LOGGER.info("device {} exit pending geofenceId={} window={}s",
+                                        deviceId, geofenceId, confirmWindow);
+                            } else {
+                                Event event = new Event(Event.TYPE_GEOFENCE_EXIT, position);
+                                event.setGeofenceId(geofenceId);
+                                callback.eventDetected(event);
+                                LOGGER.info("device {} geofence exit debounce fired geofenceId={} "
+                                        + "count={} threshold={}",
+                                        deviceId, geofenceId, state.pendingCount, exitThreshold);
+                            }
                         }
                     }
                 }
@@ -202,6 +261,77 @@ public class GeofenceEventHandler extends BaseEventHandler {
                     }
                 }
             }
+        }
+    }
+
+    /**
+     * Returns true if the current position represents a teleport return to the geofence
+     * the pending exit left — implied speed exceeds teleport thresholds. This signals
+     * the exit was GPS drift (high-speed dart-out followed by an instant snap-back).
+     */
+    private boolean isTeleportReturn(PendingExit pending, Position current) {
+        double intervalSec = (current.getFixTime().getTime() - pending.triggerTimeMs) / 1000.0;
+        if (intervalSec <= 0) {
+            return false;
+        }
+        double distance = DistanceCalculator.distance(
+                pending.triggerPosition.getLatitude(), pending.triggerPosition.getLongitude(),
+                current.getLatitude(), current.getLongitude());
+        double impliedSpeed = distance / intervalSec;
+        double reportedSpeed = current.getSpeed() * KNOTS_TO_MPS;
+        return impliedSpeed > TELEPORT_MIN_MPS
+                && impliedSpeed > reportedSpeed * TELEPORT_MAX_RATIO;
+    }
+
+    /**
+     * Resolves pending exits for a device on each incoming position. A pending exit
+     * is confirmed (fired) when the confirmation window expires, or discarded when the
+     * device teleports back inside the geofence. Runs for skipped positions too, since
+     * the snap-back point is often skipped by the consistency filter but its coordinates
+     * are still valid for the teleport check.
+     */
+    private void processPendingExits(
+            long deviceId, Position position, Callback callback, int confirmWindow) {
+        ConcurrentHashMap<Long, PendingExit> devicePending = pendingExits.get(deviceId);
+        if (devicePending == null || devicePending.isEmpty()) {
+            return;
+        }
+        long nowMs = position.getFixTime().getTime();
+        for (PendingExit pending : List.copyOf(devicePending.values())) {
+            long elapsedSec = (nowMs - pending.triggerTimeMs) / 1000;
+            if (elapsedSec > confirmWindow) {
+                Geofence geofence = cacheManager.getObject(Geofence.class, pending.geofenceId);
+                if (geofence != null) {
+                    long calendarId = geofence.getCalendarId();
+                    Calendar calendar = calendarId != 0
+                            ? cacheManager.getObject(Calendar.class, calendarId) : null;
+                    if (calendar == null
+                            || calendar.checkMoment(pending.triggerPosition.getFixTime())) {
+                        Event event = new Event(
+                                Event.TYPE_GEOFENCE_EXIT, pending.triggerPosition);
+                        event.setGeofenceId(pending.geofenceId);
+                        callback.eventDetected(event);
+                        LOGGER.info("device {} exit confirmed (window expired) geofenceId={} "
+                                + "elapsed={}s window={}s",
+                                deviceId, pending.geofenceId, elapsedSec, confirmWindow);
+                    }
+                }
+                devicePending.remove(pending.geofenceId);
+            } else if (isTeleportReturn(pending, position)) {
+                Geofence geofence = cacheManager.getObject(Geofence.class, pending.geofenceId);
+                if (geofence != null && geofence.containsPosition(position)) {
+                    DebounceState state = debounceStates.get(deviceId);
+                    if (state != null) {
+                        state.stableGeofenceIds.add(pending.geofenceId);
+                    }
+                    devicePending.remove(pending.geofenceId);
+                    LOGGER.info("device {} exit discarded (teleport return) geofenceId={} "
+                            + "elapsed={}s", deviceId, pending.geofenceId, elapsedSec);
+                }
+            }
+        }
+        if (devicePending.isEmpty()) {
+            pendingExits.remove(deviceId);
         }
     }
 }

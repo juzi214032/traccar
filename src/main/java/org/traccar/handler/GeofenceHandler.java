@@ -25,7 +25,9 @@ import org.traccar.helper.model.GeofenceUtil;
 import org.traccar.model.Position;
 import org.traccar.session.cache.CacheManager;
 
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class GeofenceHandler extends BasePositionHandler {
@@ -102,6 +104,12 @@ public class GeofenceHandler extends BasePositionHandler {
         private int awayStreak;
         /** Distance of the last position from the anchor (for tracking "away" direction). */
         private double lastDistanceFromAnchor;
+        /**
+         * Geofence ids recorded when the anchor was locked. A position inside the anchor
+         * release radius that would flip this state (inside→outside or vice versa) is
+         * treated as a boundary drift and filtered.
+         */
+        private Set<Long> anchorGeofenceIds;
 
         AnchorState(double lat, double lon) {
             this.clusterLat = lat;
@@ -195,6 +203,9 @@ public class GeofenceHandler extends BasePositionHandler {
 
         // 锚点过滤：设备静止时锁定锚点，远离锚点的位置跳过围栏计算
         boolean skipByAnchor = false;
+        AnchorState state = null;
+        boolean anchorJustLocked = false;
+        List<Long> precomputedGeofenceIds = null;
         Integer anchorRadius = AttributeUtil.lookup(
                 cacheManager, Keys.FILTER_GEOFENCE_ANCHOR_RADIUS, deviceId);
         Integer anchorCount = AttributeUtil.lookup(
@@ -215,7 +226,7 @@ public class GeofenceHandler extends BasePositionHandler {
                 double lat = position.getLatitude();
                 double lon = position.getLongitude();
 
-                AnchorState state = anchorStates.computeIfAbsent(deviceId, k -> new AnchorState(lat, lon));
+                state = anchorStates.computeIfAbsent(deviceId, k -> new AnchorState(lat, lon));
 
                 if (!state.isAnchored) {
                     // Phase 1: building anchor cluster
@@ -227,6 +238,7 @@ public class GeofenceHandler extends BasePositionHandler {
                         state.clusterLon = state.clusterLon + (lon - state.clusterLon) / state.clusterCount;
                         if (state.clusterCount >= anchorCount) {
                             state.isAnchored = true;
+                            anchorJustLocked = true;
                             state.anchorLat = state.clusterLat;
                             state.anchorLon = state.clusterLon;
                             state.awayStreak = 0;
@@ -244,10 +256,24 @@ public class GeofenceHandler extends BasePositionHandler {
                     double distFromAnchor = DistanceCalculator.distance(
                             lat, lon, state.anchorLat, state.anchorLon);
                     if (distFromAnchor <= anchorMaxDist) {
-                        if (state.awayStreak > 0) {
-                            LOGGER.info("device {} anchor away streak reset distance={}", deviceId, distFromAnchor);
+                        // 方案 C：放行圈内校验围栏状态一致性。锚点锁定时记录了围栏状态，
+                        // 若放行圈内的点会让状态翻转（在内→在外或反之），判定为边界漂移并拦截，
+                        // 避免静止设备因 GPS 抖动越过围栏边界而误触发进出事件。
+                        if (state.anchorGeofenceIds != null) {
+                            precomputedGeofenceIds = GeofenceUtil.getCurrentGeofences(cacheManager, position);
+                            if (!new HashSet<>(precomputedGeofenceIds).equals(state.anchorGeofenceIds)) {
+                                skipByAnchor = true;
+                                LOGGER.info("device {} anchor state-flip lat={} lon={} dist={} anchor={} current={}",
+                                        deviceId, lat, lon, distFromAnchor,
+                                        state.anchorGeofenceIds, precomputedGeofenceIds);
+                            }
                         }
-                        state.awayStreak = 0;
+                        if (!skipByAnchor) {
+                            if (state.awayStreak > 0) {
+                                LOGGER.info("device {} anchor away streak reset distance={}", deviceId, distFromAnchor);
+                            }
+                            state.awayStreak = 0;
+                        }
                     } else {
                         if (distFromAnchor > state.lastDistanceFromAnchor) {
                             state.awayStreak++;
@@ -261,6 +287,7 @@ public class GeofenceHandler extends BasePositionHandler {
                             // sustained movement: release anchor
                             LOGGER.info("device {} anchor released awayStreak={}", deviceId, state.awayStreak);
                             state.isAnchored = false;
+                            state.anchorGeofenceIds = null;
                             state.clusterLat = lat;
                             state.clusterLon = lon;
                             state.clusterCount = 1;
@@ -283,11 +310,22 @@ public class GeofenceHandler extends BasePositionHandler {
             if (lastPosition != null && lastPosition.getGeofenceIds() != null) {
                 position.setGeofenceIds(lastPosition.getGeofenceIds());
             }
+            // 锚点刚锁定时，即使本帧被速度黑名单等规则跳过，也用继承到的围栏状态
+            // 记录锚点基准，否则方案 C 的状态翻转检查无从比较
+            if (anchorJustLocked && state != null) {
+                List<Long> inherited = position.getGeofenceIds();
+                state.anchorGeofenceIds = inherited != null ? new HashSet<>(inherited) : new HashSet<>();
+            }
         } else {
             // 位置数据质量合格，重新计算围栏
-            List<Long> geofenceIds = GeofenceUtil.getCurrentGeofences(cacheManager, position);
+            List<Long> geofenceIds = precomputedGeofenceIds != null
+                    ? precomputedGeofenceIds
+                    : GeofenceUtil.getCurrentGeofences(cacheManager, position);
             if (!geofenceIds.isEmpty()) {
                 position.setGeofenceIds(geofenceIds);
+            }
+            if (anchorJustLocked && state != null) {
+                state.anchorGeofenceIds = new HashSet<>(geofenceIds);
             }
         }
         callback.processed(false);

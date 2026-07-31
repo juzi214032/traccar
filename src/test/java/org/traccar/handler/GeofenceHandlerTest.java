@@ -464,4 +464,55 @@ public class GeofenceHandlerTest {
             lastPositionRef.set(p);
         }
     }
+
+    @Test
+    public void testAnchorStateFlipFiltersBoundaryDrift() {
+        // 复现 2026-07-31 19:48 (UTC+8) 的边界漂移：设备长时间静止在家围栏内，
+        // 一个漂移点落在锚点放行圈内（<50m）却越过围栏边界，方案 C 应拦住它，
+        // 继承锚点围栏状态并标记 skipped，使下游防抖计数不推进。
+        // 坐标已等量平移脱敏（lat+5, lon-8），相对几何关系与原始数据完全一致。
+        when(config.getString("filter.geofenceEventAccuracy")).thenReturn("20");
+        configureAnchor(30, 5, 50, 5);
+
+        // 脱敏家围栏多边形（原始坐标等量平移 lat+5, lon-8）
+        Geofence home = new Geofence();
+        home.setId(GEOFENCE_ID);
+        home.setArea("POLYGON ((35.30160967824608 112.20360753223486, "
+                + "35.302433018113717 112.20462670203165, "
+                + "35.301407428001042 112.20618992433879, "
+                + "35.300960448967626 112.2056050577438, "
+                + "35.300801270828643 112.20537814409246, "
+                + "35.300747572078627 112.20529494942407, "
+                + "35.300523446548993 112.20499636543155, "
+                + "35.30160967824608 112.20360753223486))");
+        when(cacheManager.getDeviceObjects(anyLong(), eq(Geofence.class))).thenReturn(Set.of(home));
+
+        // 脱敏锚点位置：设备停留点（原始 30.301943, 120.205066），在围栏内
+        double anchorLat = 35.301943;
+        double anchorLon = 112.205066;
+
+        // 建立锚点：5 个静止点（accuracy<20 通过精度过滤，未配速度黑名单所以 speed=0 正常算围栏）
+        for (int i = 0; i < 5; i++) {
+            Position p = position(anchorLat, anchorLon);
+            p.setAccuracy(14);
+            handler.onPosition(p, countingCallback(new AtomicBoolean()));
+        }
+
+        // 设 lastPosition 带围栏状态 [GEOFENCE_ID]，模拟设备静止时已稳定在围栏内
+        Position lastPos = positionWithGeofenceIds(anchorLat, anchorLon, List.of(GEOFENCE_ID));
+        lastPositionRef.set(lastPos);
+
+        // 脱敏漂移点（原始 30.302312, 120.204899）：距锚点 ~46.7m（放行圈内），
+        // 但落在围栏东北边界外 ~8.5m。speed=0.12 节逃过零速黑名单，accuracy=14.97 通过精度过滤。
+        Position drift = position(35.302312, 112.204899);
+        drift.setAccuracy(14.97);
+        drift.setSpeed(0.12);
+        handler.onPosition(drift, countingCallback(new AtomicBoolean()));
+
+        // 方案 C：状态翻转 → 被 skip，继承锚点围栏状态
+        assertEquals(List.of(GEOFENCE_ID), drift.getGeofenceIds(),
+                "边界漂移点应被方案C拦截，继承锚点围栏状态");
+        assertTrue(drift.getBoolean(GeofenceHandler.ATTRIBUTE_GEOFENCE_SKIPPED),
+                "漂移点应标记为 skipped，不推进防抖计数");
+    }
 }

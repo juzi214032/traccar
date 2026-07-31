@@ -1792,6 +1792,18 @@ public final class Keys {
                     List.of(KeyType.CONFIG, KeyType.DEVICE));
 
     /**
+     * Delayed confirmation window for geofence exit events, in seconds. When set to a positive
+     * value, exit events are held pending instead of firing immediately. If within the window the
+     * device teleports back inside the geofence (implied speed exceeds teleport thresholds), the
+     * exit is discarded as GPS drift. If the window expires without a teleport return, the exit is
+     * confirmed. Requires geofence exit debounce to be configured. A value of 0 or null disables
+     * the feature. Supports global CONFIG and per-device DEVICE scopes.
+     */
+    public static final ConfigKey<Integer> FILTER_GEOFENCE_EXIT_CONFIRM_WINDOW = new IntegerConfigKey(
+            "filter.geofenceExitConfirmWindow",
+            List.of(KeyType.CONFIG, KeyType.DEVICE));
+
+    /**
      * Filter positions with exactly zero speed values.
      */
     public static final ConfigKey<Boolean> FILTER_STATIC = new BooleanConfigKey(

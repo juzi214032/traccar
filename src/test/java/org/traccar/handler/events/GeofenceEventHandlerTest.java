@@ -3,6 +3,7 @@ package org.traccar.handler.events;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.traccar.config.Config;
+import org.traccar.handler.GeofenceHandler;
 import org.traccar.model.Device;
 import org.traccar.model.Event;
 import org.traccar.model.Geofence;
@@ -179,5 +180,130 @@ public class GeofenceEventHandlerTest {
         // #2: OUT → reset count=1, 1 > 0 → fire EXIT immediately
         handler.onPosition(position(new Date(t + 1000), List.of()), callback());
         assertEquals(0, capturedEvents.size(), "1st OUT: count=1, no event yet");
+    }
+
+    private Position positionWithCoords(Date time, double lat, double lon,
+                                        double speedKn, List<Long> geofenceIds) {
+        Position p = position(time, geofenceIds);
+        p.setLatitude(lat);
+        p.setLongitude(lon);
+        p.setSpeed(speedKn);
+        return p;
+    }
+
+    @Test
+    public void testExitDelayedConfirmTeleportReturnDiscards() {
+        // 复现 7/28 19:30 漂移：高速冲出触发 exit → 8秒后 teleport 跳回 → 丢弃。
+        // 坐标等量平移脱敏（lat+5, lon-8），几何关系与原始数据一致。
+        when(config.getString("filter.geofenceEventExitPositionCountBlackLte")).thenReturn("1");
+        when(config.getString("filter.geofenceExitConfirmWindow")).thenReturn("15");
+
+        Geofence home = new Geofence();
+        home.setId(GEOFENCE_ID);
+        home.setCalendarId(0L);
+        home.setArea("CIRCLE (35.3019 112.2050, 100)");
+        when(cacheManager.getObject(Geofence.class, GEOFENCE_ID)).thenReturn(home);
+
+        long t = System.currentTimeMillis();
+
+        // #1: 设备在围栏内，建立 stable={100}
+        handler.onPosition(positionWithCoords(
+                new Date(t), 35.3019, 112.2050, 0, List.of(GEOFENCE_ID)), callback());
+
+        // #2: 冲出到围栏外（~160m）→ reset, count=1
+        handler.onPosition(positionWithCoords(
+                new Date(t + 1000), 35.301998, 112.203431, 34, List.of()), callback());
+        assertEquals(0, capturedEvents.size(), "1st OUT: reset, no event");
+
+        // #3: 仍在围栏外 → count=2 > 1 → exit 挂起（延迟确认，无事件）
+        handler.onPosition(positionWithCoords(
+                new Date(t + 2000), 35.301998, 112.203431, 34, List.of()), callback());
+        assertEquals(0, capturedEvents.size(), "exit pending, no event yet");
+
+        // #4: 8秒后 teleport 跳回围栏内（位移~181m/8s≈22.6m/s，speed=0，落回围栏内）。
+        // 跳回点被 GeofenceHandler skip，继承空 geofenceIds，但坐标仍用于 teleport 判定。
+        Position ret = positionWithCoords(
+                new Date(t + 10000), 35.301368, 112.205176, 0, List.of());
+        ret.set(GeofenceHandler.ATTRIBUTE_GEOFENCE_SKIPPED, true);
+        handler.onPosition(ret, callback());
+        assertEquals(0, capturedEvents.size(), "teleport return discards exit, 0 events");
+    }
+
+    @Test
+    public void testExitDelayedConfirmWindowExpires() {
+        when(config.getString("filter.geofenceEventExitPositionCountBlackLte")).thenReturn("1");
+        when(config.getString("filter.geofenceExitConfirmWindow")).thenReturn("15");
+
+        Geofence home = new Geofence();
+        home.setId(GEOFENCE_ID);
+        home.setCalendarId(0L);
+        home.setArea("CIRCLE (35.3019 112.2050, 100)");
+        when(cacheManager.getObject(Geofence.class, GEOFENCE_ID)).thenReturn(home);
+
+        long t = System.currentTimeMillis();
+
+        // #1: 在内，stable={100}
+        handler.onPosition(positionWithCoords(
+                new Date(t), 35.3019, 112.2050, 0, List.of(GEOFENCE_ID)), callback());
+
+        // #2: 冲出，reset, count=1
+        handler.onPosition(positionWithCoords(
+                new Date(t + 1000), 35.302, 112.203, 34, List.of()), callback());
+
+        // #3: 仍在外，count=2 > 1 → exit 挂起
+        handler.onPosition(positionWithCoords(
+                new Date(t + 2000), 35.302, 112.203, 34, List.of()), callback());
+        assertEquals(0, capturedEvents.size(), "exit pending");
+
+        // #4: 16秒后（超过 15s 窗口），仍在外 → 确认 exit
+        handler.onPosition(positionWithCoords(
+                new Date(t + 18000), 35.302, 112.203, 34, List.of()), callback());
+        assertEquals(1, capturedEvents.size(), "window expired, exit confirmed");
+        assertEquals(Event.TYPE_GEOFENCE_EXIT, capturedEvents.get(0).getType());
+        assertEquals(GEOFENCE_ID, capturedEvents.get(0).getGeofenceId());
+    }
+
+    @Test
+    public void testExitDelayedConfirmOverwrite() {
+        // 已有挂起 exit A 时，新 exit B 触发应先确认 A（未被丢弃说明是真实 exit）。
+        when(config.getString("filter.geofenceEventExitPositionCountBlackLte")).thenReturn("0");
+        when(config.getString("filter.geofenceEventEnterPositionCountBlackLte")).thenReturn("0");
+        when(config.getString("filter.geofenceExitConfirmWindow")).thenReturn("30");
+
+        // mock geofence：containsPosition 恒真；所有点同位置（位移 0 → 非 teleport）
+        Geofence home = mock(Geofence.class);
+        when(home.getCalendarId()).thenReturn(0L);
+        when(home.containsPosition(org.mockito.ArgumentMatchers.any())).thenReturn(true);
+        when(cacheManager.getObject(Geofence.class, GEOFENCE_ID)).thenReturn(home);
+
+        long t = System.currentTimeMillis();
+
+        // #1: IN, stable={100}
+        handler.onPosition(positionWithCoords(
+                new Date(t), 35.3019, 112.2050, 0, List.of(GEOFENCE_ID)), callback());
+        // #2: OUT, reset, return
+        handler.onPosition(positionWithCoords(
+                new Date(t + 1000), 35.3019, 112.2050, 0, List.of()), callback());
+        // #3: OUT, count=2 > 0 → exit A 挂起 (triggerTime=t+2000), stable={}
+        handler.onPosition(positionWithCoords(
+                new Date(t + 2000), 35.3019, 112.2050, 0, List.of()), callback());
+        assertEquals(0, capturedEvents.size(), "exit A pending");
+
+        // #4: IN, reset, return (A 保留：位移 0 非 teleport)
+        handler.onPosition(positionWithCoords(
+                new Date(t + 3000), 35.3019, 112.2050, 0, List.of(GEOFENCE_ID)), callback());
+        // #5: IN, count=2 > 0 → ENTER, stable={100}
+        handler.onPosition(positionWithCoords(
+                new Date(t + 4000), 35.3019, 112.2050, 0, List.of(GEOFENCE_ID)), callback());
+        assertEquals(1, capturedEvents.size(), "ENTER fired");
+
+        // #6: OUT, reset, return
+        handler.onPosition(positionWithCoords(
+                new Date(t + 5000), 35.3019, 112.2050, 0, List.of()), callback());
+        // #7: OUT, count=2 > 0 → exit B: existing A → 确认 A, 挂起 B
+        handler.onPosition(positionWithCoords(
+                new Date(t + 6000), 35.3019, 112.2050, 0, List.of()), callback());
+        assertEquals(2, capturedEvents.size(), "ENTER + exit A confirmed on overwrite");
+        assertEquals(Event.TYPE_GEOFENCE_EXIT, capturedEvents.get(1).getType());
     }
 }
