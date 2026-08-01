@@ -1822,6 +1822,48 @@ public final class Keys {
             List.of(KeyType.CONFIG, KeyType.DEVICE));
 
     /**
+     * Home Assistant base URL (e.g. http://192.168.66.3:8213). When set together with a token,
+     * geofence evaluation can be overridden by the device's presence entity: if the entity reports
+     * the device at home, the configured home geofence is assigned directly and GPS geofence
+     * calculation is skipped. Shared by all devices.
+     */
+    public static final ConfigKey<String> HOMEASSISTANT_URL = new StringConfigKey(
+            "homeassistant.url",
+            List.of(KeyType.CONFIG));
+
+    /**
+     * Home Assistant long-lived access token used as the Bearer authorization. Shared by all devices.
+     */
+    public static final ConfigKey<String> HOMEASSISTANT_TOKEN = new StringConfigKey(
+            "homeassistant.token",
+            List.of(KeyType.CONFIG));
+
+    /**
+     * Interval in seconds for polling Home Assistant entity states in the background. Defaults to 15.
+     */
+    public static final ConfigKey<Integer> HOMEASSISTANT_POLL_INTERVAL = new IntegerConfigKey(
+            "homeassistant.pollInterval",
+            List.of(KeyType.CONFIG),
+            15);
+
+    /**
+     * Per-device Home Assistant presence entity id (e.g. sensor.yueyue_iphone). A state of
+     * {@code not_home} means away, {@code unavailable} means the condition is ignored (logged as an
+     * error), and any other state means the device is at home. Configure as a device attribute.
+     */
+    public static final ConfigKey<String> HOMEASSISTANT_ENTITY = new StringConfigKey(
+            "homeassistant.entity",
+            List.of(KeyType.CONFIG, KeyType.DEVICE));
+
+    /**
+     * Per-device geofence id assigned when the Home Assistant entity reports the device at home.
+     * Configure as a device attribute.
+     */
+    public static final ConfigKey<Integer> HOMEASSISTANT_HOME_GEOFENCE_ID = new IntegerConfigKey(
+            "homeassistant.homeGeofenceId",
+            List.of(KeyType.CONFIG, KeyType.DEVICE));
+
+    /**
      * Filter positions with exactly zero speed values.
      */
     public static final ConfigKey<Boolean> FILTER_STATIC = new BooleanConfigKey(

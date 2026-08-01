@@ -23,6 +23,7 @@ import org.traccar.helper.DistanceCalculator;
 import org.traccar.helper.model.AttributeUtil;
 import org.traccar.helper.model.GeofenceUtil;
 import org.traccar.model.Position;
+import org.traccar.session.HomeAssistantProvider;
 import org.traccar.session.cache.CacheManager;
 
 import java.util.HashSet;
@@ -55,6 +56,7 @@ public class GeofenceHandler extends BasePositionHandler {
     private static final double MAX_ACCELERATION_MPS2 = 10.0;
 
     private final CacheManager cacheManager;
+    private final HomeAssistantProvider homeAssistant;
 
     /**
      * Per-device anchor state for detecting stationary-to-drifting transitions.
@@ -119,14 +121,30 @@ public class GeofenceHandler extends BasePositionHandler {
     }
 
     @Inject
-    public GeofenceHandler(CacheManager cacheManager) {
+    public GeofenceHandler(CacheManager cacheManager, HomeAssistantProvider homeAssistant) {
         this.cacheManager = cacheManager;
+        this.homeAssistant = homeAssistant;
     }
 
     @Override
     public void onPosition(Position position, Callback callback) {
 
         long deviceId = position.getDeviceId();
+
+        // Home Assistant 覆盖：若设备的在家实体判定"在家"，直接认定为家围栏，跳过所有 GPS 围栏计算，
+        // 从根本上消除家附近的 GPS 漂移误报。not_home / unavailable / 未配置则继续走原有逻辑。
+        if (homeAssistant.isEnabled()) {
+            String entity = AttributeUtil.lookup(cacheManager, Keys.HOMEASSISTANT_ENTITY, deviceId);
+            Integer homeGeofenceId = AttributeUtil.lookup(
+                    cacheManager, Keys.HOMEASSISTANT_HOME_GEOFENCE_ID, deviceId);
+            if (entity != null && homeGeofenceId != null
+                    && homeAssistant.getState(entity) == HomeAssistantProvider.HomeState.HOME) {
+                position.setGeofenceIds(List.of(homeGeofenceId.longValue()));
+                LOGGER.info("device {} home-assistant home override geofence={}", deviceId, homeGeofenceId);
+                callback.processed(false);
+                return;
+            }
+        }
 
         // 获取精度阈值配置，支持全局 CONFIG 和按设备 DEVICE 覆盖
         Integer geofenceEventAccuracy = AttributeUtil.lookup(

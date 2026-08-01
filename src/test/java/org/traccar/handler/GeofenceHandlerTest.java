@@ -6,6 +6,7 @@ import org.traccar.config.Config;
 import org.traccar.model.Device;
 import org.traccar.model.Geofence;
 import org.traccar.model.Position;
+import org.traccar.session.HomeAssistantProvider;
 import org.traccar.session.cache.CacheManager;
 
 import java.util.Date;
@@ -41,6 +42,7 @@ public class GeofenceHandlerTest {
     private CacheManager cacheManager;
     private Config config;
     private GeofenceHandler handler;
+    private HomeAssistantProvider homeAssistant;
     private AtomicReference<Position> lastPositionRef;
 
     @BeforeEach
@@ -62,7 +64,11 @@ public class GeofenceHandlerTest {
         lastPositionRef = new AtomicReference<>();
         when(cacheManager.getPosition(DEVICE_ID)).thenAnswer(inv -> lastPositionRef.get());
 
-        handler = new GeofenceHandler(cacheManager);
+        // Default: Home Assistant integration disabled so existing tests are unaffected
+        homeAssistant = mock(HomeAssistantProvider.class);
+        when(homeAssistant.isEnabled()).thenReturn(false);
+
+        handler = new GeofenceHandler(cacheManager, homeAssistant);
     }
 
     // ---- helpers ----
@@ -514,5 +520,42 @@ public class GeofenceHandlerTest {
                 "边界漂移点应被方案C拦截，继承锚点围栏状态");
         assertTrue(drift.getBoolean(GeofenceHandler.ATTRIBUTE_GEOFENCE_SKIPPED),
                 "漂移点应标记为 skipped，不推进防抖计数");
+    }
+
+    @Test
+    public void testHomeAssistantHomeOverride() {
+        // HA 判定在家 → 直接认定家围栏，跳过所有过滤和 GPS 计算，即使当前点在围栏外
+        when(homeAssistant.isEnabled()).thenReturn(true);
+        when(homeAssistant.getState("sensor.yueyue_iphone"))
+                .thenReturn(HomeAssistantProvider.HomeState.HOME);
+        when(config.getString("homeassistant.entity")).thenReturn("sensor.yueyue_iphone");
+        when(config.getString("homeassistant.homeGeofenceId")).thenReturn("100");
+        configureAnchor(30, 5, 50, 5);
+
+        // 一个明显在围栏外的漂移点（无匹配围栏，正常计算会得 null）
+        Position drift = position(BASE_LAT, DRIFT_LON);
+        drift.setAccuracy(10);
+        handler.onPosition(drift, countingCallback(new AtomicBoolean()));
+
+        assertEquals(List.of(GEOFENCE_ID), drift.getGeofenceIds(),
+                "HA 在家应直接覆盖为家围栏，不做 GPS 计算");
+        assertNull(drift.getAttributes().get(GeofenceHandler.ATTRIBUTE_GEOFENCE_SKIPPED),
+                "在家覆盖不打 skipped 标记，作为真实在家观测参与防抖");
+    }
+
+    @Test
+    public void testHomeAssistantNotHomeFallsThrough() {
+        // HA 判定不在家 → 不覆盖，走原有 GPS 计算逻辑
+        when(homeAssistant.isEnabled()).thenReturn(true);
+        when(homeAssistant.getState("sensor.yueyue_iphone"))
+                .thenReturn(HomeAssistantProvider.HomeState.NOT_HOME);
+        when(config.getString("homeassistant.entity")).thenReturn("sensor.yueyue_iphone");
+        when(config.getString("homeassistant.homeGeofenceId")).thenReturn("100");
+
+        Position p = position(BASE_LAT, DRIFT_LON);
+        handler.onPosition(p, countingCallback(new AtomicBoolean()));
+
+        assertNull(p.getGeofenceIds(),
+                "不在家不覆盖，正常计算无匹配围栏得 null");
     }
 }

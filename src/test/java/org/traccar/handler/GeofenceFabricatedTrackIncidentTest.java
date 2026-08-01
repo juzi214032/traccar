@@ -8,6 +8,7 @@ import org.traccar.model.Device;
 import org.traccar.model.Event;
 import org.traccar.model.Geofence;
 import org.traccar.model.Position;
+import org.traccar.session.HomeAssistantProvider;
 import org.traccar.session.cache.CacheManager;
 
 import java.util.ArrayList;
@@ -124,7 +125,7 @@ public class GeofenceFabricatedTrackIncidentTest {
         lastPositionRef = new AtomicReference<>();
         when(cacheManager.getPosition(DEVICE_ID)).thenAnswer(inv -> lastPositionRef.get());
 
-        geofenceHandler = new GeofenceHandler(cacheManager);
+        geofenceHandler = new GeofenceHandler(cacheManager, mock(HomeAssistantProvider.class));
         eventHandler = new GeofenceEventHandler(cacheManager);
     }
 

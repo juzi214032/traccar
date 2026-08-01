@@ -22,6 +22,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.traccar.broadcast.BroadcastService;
 import org.traccar.schedule.ScheduleManager;
+import org.traccar.session.HomeAssistantProvider;
 import org.traccar.storage.DatabaseModule;
 import org.traccar.web.WebModule;
 import org.traccar.web.WebServer;
@@ -120,7 +121,8 @@ public final class Main {
 
             var services = new ArrayList<LifecycleObject>();
             for (var clazz : List.of(
-                    ScheduleManager.class, ServerManager.class, WebServer.class, BroadcastService.class)) {
+                    ScheduleManager.class, ServerManager.class, WebServer.class, BroadcastService.class,
+                    HomeAssistantProvider.class)) {
                 var service = injector.getInstance(clazz);
                 if (service != null) {
                     service.start();
