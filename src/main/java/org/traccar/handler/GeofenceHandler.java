@@ -54,6 +54,18 @@ public class GeofenceHandler extends BasePositionHandler {
     private static final double CONSISTENCY_MAX_INTERVAL = 60.0;
     /** Maximum plausible reported-speed increase rate (m/s^2) for the acceleration check. */
     private static final double MAX_ACCELERATION_MPS2 = 10.0;
+    /**
+     * An anchor is abandoned outright once the device is farther than this multiple of
+     * anchorMaxDistance away. GPS drift cannot sustain such a distance, so the anchor must
+     * be stale rather than the device drifting.
+     */
+    private static final int ANCHOR_ABANDON_DISTANCE_FACTOR = 5;
+    /**
+     * Minimum time span an anchor cluster must cover before it can lock. Being stationary
+     * means "has not moved for a while", not "a few samples landed close together" — slow
+     * walking also produces several nearby samples within a few seconds.
+     */
+    private static final long ANCHOR_MIN_CLUSTER_SPAN_MS = 60_000;
 
     private final CacheManager cacheManager;
     private final HomeAssistantProvider homeAssistant;
@@ -85,19 +97,23 @@ public class GeofenceHandler extends BasePositionHandler {
     /**
      * Tracks the stationary anchor state for a single device.
      * <p>
-     * When a device produces {@code anchorCount} consecutive positions within
-     * {@code anchorRadius} meters of each other, an anchor is locked. Once locked,
-     * positions farther than {@code anchorMaxDistance} from the anchor are filtered
-     * (geofence calculation skipped) unless the device shows sustained movement away
-     * from the anchor for {@code anchorReleaseCount} consecutive positions.
+     * When a device produces at least {@code anchorCount} consecutive positions within
+     * {@code anchorRadius} meters of the running cluster center, spanning at least
+     * {@link #ANCHOR_MIN_CLUSTER_SPAN_MS}, an anchor is locked. Once locked, positions
+     * farther than {@code anchorMaxDistance} from the anchor are filtered (geofence
+     * calculation skipped) unless the device shows sustained movement away from the anchor
+     * for {@code anchorReleaseCount} consecutive positions, or moves far enough that the
+     * anchor is abandoned outright.
      */
     private static class AnchorState {
-        /** Running cluster center used during the building phase. */
+        /** Fix time of the cluster window origin, for the minimum span requirement. */
+        private long clusterStartTime;
+        /** Running cluster center, used as the anchor coordinates once locked. */
         private double clusterLat;
         private double clusterLon;
         /** Number of consecutive positions within anchorRadius of the cluster center. */
         private int clusterCount;
-        /** Locked anchor coordinates (set when clusterCount reaches anchorCount). */
+        /** Locked anchor coordinates (set when the cluster qualifies). */
         private double anchorLat;
         private double anchorLon;
         /** Whether the anchor is currently locked and filtering. */
@@ -113,10 +129,15 @@ public class GeofenceHandler extends BasePositionHandler {
          */
         private Set<Long> anchorGeofenceIds;
 
-        AnchorState(double lat, double lon) {
-            this.clusterLat = lat;
-            this.clusterLon = lon;
-            this.clusterCount = 1;
+        AnchorState(double lat, double lon, long timeMs) {
+            resetCluster(lat, lon, timeMs);
+        }
+
+        void resetCluster(double lat, double lon, long timeMs) {
+            clusterStartTime = timeMs;
+            clusterLat = lat;
+            clusterLon = lon;
+            clusterCount = 1;
         }
     }
 
@@ -243,8 +264,9 @@ public class GeofenceHandler extends BasePositionHandler {
             } else {
                 double lat = position.getLatitude();
                 double lon = position.getLongitude();
+                long fixTimeMs = position.getFixTime().getTime();
 
-                state = anchorStates.computeIfAbsent(deviceId, k -> new AnchorState(lat, lon));
+                state = anchorStates.computeIfAbsent(deviceId, k -> new AnchorState(lat, lon, fixTimeMs));
 
                 if (!state.isAnchored) {
                     // Phase 1: building anchor cluster
@@ -254,26 +276,35 @@ public class GeofenceHandler extends BasePositionHandler {
                         // running average update
                         state.clusterLat = state.clusterLat + (lat - state.clusterLat) / state.clusterCount;
                         state.clusterLon = state.clusterLon + (lon - state.clusterLon) / state.clusterCount;
-                        if (state.clusterCount >= anchorCount) {
+                        long clusterSpan = fixTimeMs - state.clusterStartTime;
+                        if (state.clusterCount >= anchorCount && clusterSpan >= ANCHOR_MIN_CLUSTER_SPAN_MS) {
                             state.isAnchored = true;
                             anchorJustLocked = true;
                             state.anchorLat = state.clusterLat;
                             state.anchorLon = state.clusterLon;
                             state.awayStreak = 0;
                             state.lastDistanceFromAnchor = 0;
-                            LOGGER.info("device {} anchor established lat={} lon={} clusterCount={}",
-                                    deviceId, state.anchorLat, state.anchorLon, state.clusterCount);
+                            LOGGER.info("device {} anchor established lat={} lon={} clusterCount={} span={}",
+                                    deviceId, state.anchorLat, state.anchorLon, state.clusterCount, clusterSpan);
                         }
                     } else {
-                        state.clusterLat = lat;
-                        state.clusterLon = lon;
-                        state.clusterCount = 1;
+                        state.resetCluster(lat, lon, fixTimeMs);
                     }
                 } else {
                     // Phase 2: anchor active
                     double distFromAnchor = DistanceCalculator.distance(
                             lat, lon, state.anchorLat, state.anchorLon);
-                    if (distFromAnchor <= anchorMaxDist) {
+                    double abandonDistance = (double) anchorMaxDist * ANCHOR_ABANDON_DISTANCE_FACTOR;
+                    if (distFromAnchor > abandonDistance) {
+                        // 距离硬上限：GPS 漂移到不了这个尺度，说明锚点已经陈旧（例如设备在低精度
+                        // 路段长途移动，锚点状态被冻结而残留下来）。直接丢弃，不要求 away streak——
+                        // 远距离上径向距离随朝向随机涨落，streak 会反复清零而永远攒不满。
+                        LOGGER.info("device {} anchor abandoned lat={} lon={} distance={} threshold={}",
+                                deviceId, lat, lon, distFromAnchor, abandonDistance);
+                        state.isAnchored = false;
+                        state.anchorGeofenceIds = null;
+                        state.resetCluster(lat, lon, fixTimeMs);
+                    } else if (distFromAnchor <= anchorMaxDist) {
                         // 方案 C：放行圈内校验围栏状态一致性。锚点锁定时记录了围栏状态，
                         // 若放行圈内的点会让状态翻转（在内→在外或反之），判定为边界漂移并拦截，
                         // 避免静止设备因 GPS 抖动越过围栏边界而误触发进出事件。
@@ -306,9 +337,7 @@ public class GeofenceHandler extends BasePositionHandler {
                             LOGGER.info("device {} anchor released awayStreak={}", deviceId, state.awayStreak);
                             state.isAnchored = false;
                             state.anchorGeofenceIds = null;
-                            state.clusterLat = lat;
-                            state.clusterLon = lon;
-                            state.clusterCount = 1;
+                            state.resetCluster(lat, lon, fixTimeMs);
                         } else {
                             skipByAnchor = true;
                             LOGGER.info("device {} anchor filtered lat={} lon={} distance={} awayStreak={}/{}",
@@ -328,11 +357,13 @@ public class GeofenceHandler extends BasePositionHandler {
             if (lastPosition != null && lastPosition.getGeofenceIds() != null) {
                 position.setGeofenceIds(lastPosition.getGeofenceIds());
             }
-            // 锚点刚锁定时，即使本帧被速度黑名单等规则跳过，也用继承到的围栏状态
-            // 记录锚点基准，否则方案 C 的状态翻转检查无从比较
+            // 锚点基准必须用几何计算结果，不能用继承值：继承值可能在之前的跳过窗口里
+            // 就已过期，而状态翻转检查拿它和几何结果比较，过期基准会让放行圈内的真实
+            // 状态被永久判为翻转且无法自愈。锚点锁定要求本帧未被精度/一致性/加速度
+            // 否决，因此此处的几何计算输入是可信的。
             if (anchorJustLocked && state != null) {
-                List<Long> inherited = position.getGeofenceIds();
-                state.anchorGeofenceIds = inherited != null ? new HashSet<>(inherited) : new HashSet<>();
+                state.anchorGeofenceIds = new HashSet<>(
+                        GeofenceUtil.getCurrentGeofences(cacheManager, position));
             }
         } else {
             // 位置数据质量合格，重新计算围栏
