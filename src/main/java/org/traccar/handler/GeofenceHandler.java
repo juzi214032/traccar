@@ -66,6 +66,13 @@ public class GeofenceHandler extends BasePositionHandler {
      * walking also produces several nearby samples within a few seconds.
      */
     private static final long ANCHOR_MIN_CLUSTER_SPAN_MS = 60_000;
+    /**
+     * Minimum reported speed for a position to participate in the away-streak release.
+     * Stationary GPS drift almost always reports zero speed while genuine movement reports
+     * a nonzero speed, so the gate stops far-away drift clusters from releasing the anchor
+     * via a monotonically increasing radial distance.
+     */
+    private static final double ANCHOR_AWAY_MIN_SPEED_KNOTS = 0.5;
 
     private final CacheManager cacheManager;
     private final HomeAssistantProvider homeAssistant;
@@ -265,6 +272,7 @@ public class GeofenceHandler extends BasePositionHandler {
                 double lat = position.getLatitude();
                 double lon = position.getLongitude();
                 long fixTimeMs = position.getFixTime().getTime();
+                boolean speedGateFrozen = false;
 
                 state = anchorStates.computeIfAbsent(deviceId, k -> new AnchorState(lat, lon, fixTimeMs));
 
@@ -324,13 +332,23 @@ public class GeofenceHandler extends BasePositionHandler {
                             state.awayStreak = 0;
                         }
                     } else {
-                        if (distFromAnchor > state.lastDistanceFromAnchor) {
-                            state.awayStreak++;
-                            LOGGER.info("device {} anchor away streak {} distance={} lastDistance={}",
-                                    deviceId, state.awayStreak, distFromAnchor, state.lastDistanceFromAnchor);
+                        if (position.getSpeed() <= ANCHOR_AWAY_MIN_SPEED_KNOTS) {
+                            // 速度门：GPS 定点漂移几乎总是报 0 速，真实移动报非 0 速。零速点
+                            // 既不推进也不重置计数——重置会让漂移点反复清零后再慢慢重新攒满。
+                            skipByAnchor = true;
+                            speedGateFrozen = true;
+                            LOGGER.info("device {} anchor away streak frozen by speed distance={} speed={}",
+                                    deviceId, distFromAnchor, position.getSpeed());
                         } else {
-                            LOGGER.info("device {} anchor away streak reset distance={}", deviceId, distFromAnchor);
-                            state.awayStreak = 0;
+                            if (distFromAnchor > state.lastDistanceFromAnchor) {
+                                state.awayStreak++;
+                                LOGGER.info("device {} anchor away streak {} distance={} lastDistance={}",
+                                        deviceId, state.awayStreak, distFromAnchor, state.lastDistanceFromAnchor);
+                            } else {
+                                LOGGER.info("device {} anchor away streak reset distance={}",
+                                        deviceId, distFromAnchor);
+                                state.awayStreak = 0;
+                            }
                         }
                         if (state.awayStreak >= anchorRelease) {
                             // sustained movement: release anchor
@@ -344,7 +362,9 @@ public class GeofenceHandler extends BasePositionHandler {
                                     deviceId, lat, lon, distFromAnchor, state.awayStreak, anchorRelease);
                         }
                     }
-                    state.lastDistanceFromAnchor = distFromAnchor;
+                    if (!speedGateFrozen) {
+                        state.lastDistanceFromAnchor = distFromAnchor;
+                    }
                 }
             }
         }

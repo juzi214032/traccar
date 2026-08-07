@@ -169,6 +169,7 @@ public class GeofenceHandlerTest {
         double[] eastMeters = {60, 90, 120, 150, 180};
         for (int i = 0; i < eastMeters.length; i++) {
             Position p = position(BASE_LAT, BASE_LON + eastMeters[i] / metersPerLonDegree);
+            p.setSpeed(2.0); // above the away-streak speed gate
             handler.onPosition(p, countingCallback(new AtomicBoolean()));
 
             if (i < eastMeters.length - 1) {
@@ -186,6 +187,7 @@ public class GeofenceHandlerTest {
 
         // After release, the next position should also be normally calculated
         Position afterRelease = position(BASE_LAT, BASE_LON + 210 / metersPerLonDegree);
+        afterRelease.setSpeed(2.0);
         handler.onPosition(afterRelease, countingCallback(new AtomicBoolean()));
         assertNotEquals(List.of(GEOFENCE_ID), afterRelease.getGeofenceIds(),
                 "post-release: should be normally calculated, not reuse old geofenceIds");
@@ -707,6 +709,149 @@ public class GeofenceHandlerTest {
         handler.onPosition(drift, countingCallback(new AtomicBoolean()));
         assertEquals(List.of(GEOFENCE_ID), drift.getGeofenceIds(),
                 "静止建立的锚点仍应拦截漂移点，抗漂移能力不受影响");
+    }
+
+    @Test
+    public void testZeroSpeedDriftDoesNotReleaseAnchor() {
+        // 复现 2026-08-07 玥玥公司误发 exit 事故：人静止在办公室，GPS 漂移到 88 米外的
+        // 围栏外位置并持续数分钟。漂移点距锚点单调变远且速度全为 0，旧逻辑下 away streak
+        // 攒满、锚点被释放 → 围栏重算到漂移位置 → 误发 geofenceExit（4 小时后 GPS 漂回又
+        // 误发 enter）。速度门必须冻结这些点。
+        // 坐标取自真实轨迹并等量平移脱敏（lat+5, lon-8）。
+        when(config.getString("filter.geofenceEventAccuracy")).thenReturn("20");
+        when(config.getString("filter.geofenceSpeedBlackLte")).thenReturn("0");
+        configureAnchor(30, 5, 50, 5);
+
+        Geofence office = new Geofence();
+        office.setId(GEOFENCE_ID);
+        office.setArea("POLYGON ((35.223128272630248 112.30520613803077, "
+                + "35.222965796734705 112.30644631247017, "
+                + "35.22280616848242 112.30768726776228, "
+                + "35.220862616005974 112.30720915529241, "
+                + "35.220964396692796 112.3066329135569, "
+                + "35.221066176692798 112.3060566735569, "
+                + "35.22126973196582 112.30490418211718, "
+                + "35.223128272630248 112.30520613803077))");
+        when(cacheManager.getDeviceObjects(anyLong(), eq(Geofence.class))).thenReturn(Set.of(office));
+
+        // 办公室静止点：真实轨迹 5 个连续点，第三列是相对起点的秒数（跨时 242 秒），
+        // 速度 0 → 被零速黑名单跳过，锚点在被跳过的帧上锁定，基准为 [GEOFENCE_ID]
+        double[][] restAtOffice = {
+                {35.221391, 112.305599, 0, 5.5},
+                {35.221359, 112.305566, 61, 13.7},
+                {35.221331, 112.305525, 133, 13.7},
+                {35.221340, 112.305540, 193, 9.6},
+                {35.221350, 112.305560, 242, 11.4},
+        };
+        // 上一个点带围栏状态：设备进入办公室时正常算出，静止期间被跳过的点沿继承链保持它
+        lastPositionRef.set(positionWithGeofenceIds(
+                restAtOffice[0][0], restAtOffice[0][1], List.of(GEOFENCE_ID)));
+        long base = clock;
+        for (double[] point : restAtOffice) {
+            Position p = positionAt(point[0], point[1], base + (long) point[2] * 1000);
+            p.setAccuracy(point[3]);
+            p.setSpeed(0);
+            handler.onPosition(p, countingCallback(new AtomicBoolean()));
+            lastPositionRef.set(p);
+        }
+
+        // 漂移序列（真实轨迹中距锚点单调变远的 5 个点）：85.9→104.8→118.9→136.4→144.3 米，
+        // 全部在围栏外、速度全为 0（与真实事故一致）。锚点阶段不受零速黑名单约束，
+        // 没有速度门时它们恰好攒满 streak、在第 5 个点释放锚点；有速度门时全部冻结。
+        // 第三列秒数、第四列速度、第五列精度均取自真实数据。
+        double[][] drift = {
+                {35.220590, 112.305780, 253, 0.00, 13.0},
+                {35.220393, 112.305624, 313, 0.00, 7.8},
+                {35.220263, 112.305578, 374, 0.00, 8.0},
+                {35.220105, 112.305561, 386, 0.00, 6.6},
+                {35.220033, 112.305529, 388, 0.00, 8.5},
+        };
+        for (double[] point : drift) {
+            Position p = positionAt(point[0], point[1], base + (long) point[2] * 1000);
+            p.setSpeed(point[3]);
+            p.setAccuracy(point[4]);
+            handler.onPosition(p, countingCallback(new AtomicBoolean()));
+            lastPositionRef.set(p);
+        }
+
+        // 探测点：速度 2.5 节逃过零速黑名单，位置在围栏外、距锚点约 118 米。
+        // 速度门开启时锚点仍锁定，该点被 away 分支拦截（streak 才 1/5）；
+        // 速度门关闭时锚点已被漂移序列释放，该点会正常计算出 null——两种行为由此区分。
+        Position probe = positionAt(35.220300, 112.305550, base + 450_000);
+        probe.setSpeed(2.5);
+        probe.setAccuracy(5.0);
+        handler.onPosition(probe, countingCallback(new AtomicBoolean()));
+        assertTrue(probe.getBoolean(GeofenceHandler.ATTRIBUTE_GEOFENCE_SKIPPED),
+                "锚点未被漂移释放，探测点应仍被 away 分支拦截");
+        assertEquals(List.of(GEOFENCE_ID), probe.getGeofenceIds(),
+                "被拦截的探测点应继承锚点锁定时记录的围栏状态");
+    }
+
+    @Test
+    public void testGenuineWalkingDepartureStillReleasesAnchor() {
+        // 与上一个测试对照：真实步行离场时上报速度 1.9~2.9 节，全部高于速度门，
+        // away streak 照常推进，锚点在第 5 个圈外点释放，离场判定不受影响。
+        // 坐标取自真实离场轨迹并等量平移脱敏（lat+5, lon-8）。
+        when(config.getString("filter.geofenceEventAccuracy")).thenReturn("20");
+        when(config.getString("filter.geofenceSpeedBlackLte")).thenReturn("0");
+        configureAnchor(30, 5, 50, 5);
+
+        Geofence office = new Geofence();
+        office.setId(GEOFENCE_ID);
+        office.setArea("POLYGON ((35.223128272630248 112.30520613803077, "
+                + "35.222965796734705 112.30644631247017, "
+                + "35.22280616848242 112.30768726776228, "
+                + "35.220862616005974 112.30720915529241, "
+                + "35.220964396692796 112.3066329135569, "
+                + "35.221066176692798 112.3060566735569, "
+                + "35.22126973196582 112.30490418211718, "
+                + "35.223128272630248 112.30520613803077))");
+        when(cacheManager.getDeviceObjects(anyLong(), eq(Geofence.class))).thenReturn(Set.of(office));
+
+        // 办公室静止点锁定锚点（同上一个测试的锚点位置）
+        double[][] restAtOffice = {
+                {35.221391, 112.305599, 0, 5.5},
+                {35.221359, 112.305566, 61, 13.7},
+                {35.221331, 112.305525, 133, 13.7},
+                {35.221340, 112.305540, 193, 9.6},
+                {35.221350, 112.305560, 242, 11.4},
+        };
+        // 上一个点带围栏状态：设备进入办公室时正常算出，静止期间沿继承链保持
+        lastPositionRef.set(positionWithGeofenceIds(
+                restAtOffice[0][0], restAtOffice[0][1], List.of(GEOFENCE_ID)));
+        long base = clock;
+        for (double[] point : restAtOffice) {
+            Position p = positionAt(point[0], point[1], base + (long) point[2] * 1000);
+            p.setAccuracy(point[3]);
+            p.setSpeed(0);
+            handler.onPosition(p, countingCallback(new AtomicBoolean()));
+            lastPositionRef.set(p);
+        }
+
+        // 真实步行离场轨迹：第三列秒数、第四列速度、第五列精度均取自真实数据。
+        // 距锚点 89~110 米且单调变远，速度 1.93~2.89 节全部高于速度门。
+        double[][] walking = {
+                {35.22211824198437, 112.30532998554594, 300, 2.89, 3.1},
+                {35.222164992662226, 112.30534389748307, 304, 2.48, 3.0},
+                {35.222216442074952, 112.30535903314977, 309, 2.46, 3.0},
+                {35.222263432585308, 112.305363958886, 314, 1.93, 2.8},
+                {35.22230839340614, 112.30537498617564, 318, 2.39, 2.7},
+        };
+        for (int i = 0; i < walking.length; i++) {
+            Position p = positionAt(walking[i][0], walking[i][1],
+                    base + (long) walking[i][2] * 1000);
+            p.setSpeed(walking[i][3]);
+            p.setAccuracy(walking[i][4]);
+            handler.onPosition(p, countingCallback(new AtomicBoolean()));
+            if (i < walking.length - 1) {
+                assertTrue(p.getBoolean(GeofenceHandler.ATTRIBUTE_GEOFENCE_SKIPPED),
+                        "步行点 " + i + ": streak 未满，仍被锚点拦截");
+            } else {
+                assertNull(p.getAttributes().get(GeofenceHandler.ATTRIBUTE_GEOFENCE_SKIPPED),
+                        "步行点 " + i + ": streak 攒满，锚点释放，该点正常计算");
+            }
+            lastPositionRef.set(p);
+        }
     }
 
     @Test
